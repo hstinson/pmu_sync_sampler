@@ -1,0 +1,4 @@
+A new method was added to pmu.h and pmu.c to set IRQ affinity for a PMU event on a specified CPU core.
+
+pmu.h location - <kernel_root>/arch/arm/include/asm
+pmu.c location - <kernel_root>/arch/arm/kernel

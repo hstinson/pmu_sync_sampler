@@ -1,19 +1,29 @@
+/*
+ * Methods for handling PMU sampling and IRQs on a Tegra3 powered device.
+ */
+
 #include "pmu_api.h"
 
-
-#include <linux/platform_device.h>
-#include <../mach-omap2/prm44xx.h>
-#include <../mach-omap2/cm2_44xx.h>
-#include <asm/io.h>
 #include <linux/interrupt.h>
+#include <linux/platform_device.h>
 #include <linux/irq_work.h>
-#include <asm/cti.h>
+#include <linux/cpumask.h>
+#include <linux/cpu.h>
 #include <asm/uaccess.h>
+#include <../mach-tegra/include/mach/irqs.h>
+#include <asm/io.h>
+#include <../include/asm/pmu.h>
 
 #include "v7_pmu.h"
 
 unsigned long num_ctrs = 6;
-static struct cti omap4_cti[2];
+
+#define INT_CPU0 INT_CPU0_PMU_INTR
+#define INT_CPU1 INT_CPU1_PMU_INTR
+#define INT_CPU2 INT_CPU2_PMU_INTR
+#define INT_CPU3 INT_CPU3_PMU_INTR
+
+callback cpuOnlineCallback;
 
 uint64_t read_ccnt(void) {
 	return read_ccnt_int();
@@ -22,7 +32,6 @@ uint64_t read_ccnt(void) {
 uint64_t read_pmn(unsigned i) {
 	return read_pmn_int(i);
 }
-
 
 void dump_regs(void) {
     u32 val;
@@ -64,161 +73,186 @@ void dump_regs(void) {
 
 }
 
+// Event handler for when a PMU cycle count overflow interrupt occurs
+// on one of the CPU cores.
 static irqreturn_t sample_handle_irq(int irqnum, void* dev)
-{
-    unsigned int flags;
-    // unsigned int ccnt = read_ccnt();
-
-    if (irqnum == OMAP44XX_IRQ_CTI0) {
-        cti_irq_ack(&omap4_cti[0]);
-        // printk(KERN_INFO " -- CTI0 --");
-    } else if (irqnum == OMAP44XX_IRQ_CTI1) {
-        cti_irq_ack(&omap4_cti[1]);
-        // printk(KERN_INFO " -- CTI1 --");
-    } else {
-         return IRQ_NONE;
-    }
-
-    disable_pmu();
-
-    // printk(KERN_INFO "== Interrupt Dump (CCNT: %u) ==", ccnt);
-
-    flags = read_flags(); 
-    if (flags == 0) {
-        printk(KERN_WARNING "Possible interrupt error. Flags: 0x%x", flags);
+{  
+    unsigned int flags;   
+    
+    if (irqnum != INT_CPU0 &&
+        irqnum != INT_CPU1 &&
+        irqnum != INT_CPU2 &&
+        irqnum != INT_CPU3 )
+    {
+        printk ("IRQ number was different from expected.\n");
         return IRQ_NONE;
     }
+      
+    disable_pmu();
+    
+    //printk(KERN_INFO "IRQ on core %u\tIRQ Number is %u\n", smp_processor_id(), infoStruct->irqnum);
 
+    flags = read_flags();
+    if (flags == 0) 
+    {
+        printk(KERN_WARNING "Possible interrupt error on core %u. IRQ Num: %u\tFlags: 0x%x", smp_processor_id(), irqnum, flags);
+        return IRQ_NONE;
+    }
+    
     gatherSample();
-
+    
     reset_pmn();
     if (shutdown == 0)
+    {
         write_ccnt(0xFFFFFFFF - period);
+    }
 
     // Reset overflow flags
     write_flags(0xFFFFFFFF);
-
+    
     if (shutdown == 0)
+    {
         enable_pmu();
-
+    }  
+       
     return IRQ_HANDLED;
 }
 
-/**
- * omap4_pmu_runtime_resume - PMU runtime resume callback
- * @dev     OMAP PMU device
- *
- * Platform specific PMU runtime resume callback for OMAP4430 devices to
- * configure the cross trigger interface for routing PMU interrupts. This
- * is called by the PM runtime framework.
- */
-static void pmu_cti_on(void)
+// Configures PMU cycle count interrupts for all CPU cores.
+static int config_irq(void) 
 {
-    /* configure CTI0 for PMU IRQ routing */
-    cti_unlock(&omap4_cti[0]);
-    cti_map_trigger(&omap4_cti[0], 1, 6, 2);
-    cti_enable(&omap4_cti[0]);
-
-    /* configure CTI1 for PMU IRQ routing */
-    cti_unlock(&omap4_cti[1]);
-    cti_map_trigger(&omap4_cti[1], 1, 6, 3);
-    cti_enable(&omap4_cti[1]);
-}
-
-/**
- * omap4_pmu_runtime_suspend - PMU runtime suspend callback
- * @dev     OMAP PMU device
- *
- * Platform specific PMU runtime suspend callback for OMAP4430 devices to
- * disable the cross trigger interface interrupts. This is called by the
- * PM runtime framework.
- */
-static void pmu_cti_off(void)
-{
-    cti_disable(&omap4_cti[0]);
-    cti_disable(&omap4_cti[1]);
-}
-
-/**
- * omap4_init_cti - initialise cross trigger interface instances
- *
- * Initialises two cross trigger interface (CTI) instances in preparation
- * for routing PMU interrupts to the OMAP interrupt controller. Note that
- * this does not configure the actual CTI hardware but just the CTI
- * software structures to be used.
- */
-static int omap4_init_cti(void)
-{
-    omap4_cti[0].base = ioremap(OMAP44XX_CTI0_BASE, SZ_4K);
-    omap4_cti[1].base = ioremap(OMAP44XX_CTI1_BASE, SZ_4K);
-
-    if (!omap4_cti[0].base || !omap4_cti[1].base) {
-        pr_err("ioremap for OMAP4 CTI failed\n");
-        return -ENOMEM;
-    }
-
-    cti_init(&omap4_cti[0], omap4_cti[0].base, OMAP44XX_IRQ_CTI0, 6);
-    cti_init(&omap4_cti[1], omap4_cti[1].base, OMAP44XX_IRQ_CTI1, 6);
-
-    return 0;
-}
-
-static int config_irq(void) {
     unsigned long irq_flags;
-    int rc = omap4_init_cti();
-    if (rc)
-        return rc;
-
-    pmu_cti_on();
-
+    int rc;   
+    
     irq_flags = IRQF_NOBALANCING;
 
-    if ((rc = irq_set_affinity(OMAP44XX_IRQ_CTI0, cpumask_of(0)))) {
-        printk(KERN_ERR "    unable to set irq affinity on processor 0");
-        return rc;
-    }
-
-    rc = request_irq(OMAP44XX_IRQ_CTI0, sample_handle_irq, irq_flags,
-                    "sync-pmu", NULL);
+    rc = request_irq(INT_CPU0, sample_handle_irq, irq_flags,
+                    "pmu_sync0", NULL);
     if (rc)
-        return rc;
-
-    if ((rc = irq_set_affinity(OMAP44XX_IRQ_CTI1, cpumask_of(1)))) {
-        printk(KERN_ERR "    unable to set irq affinity on processor 1");
-        free_irq(OMAP44XX_IRQ_CTI0, NULL);
+    {
         return rc;
     }
-
-    rc = request_irq(OMAP44XX_IRQ_CTI1, sample_handle_irq, irq_flags,
-                    "sync-pmu", NULL);
-    if (rc) {
-        free_irq(OMAP44XX_IRQ_CTI0, NULL);
+  
+    rc = request_irq(INT_CPU1, sample_handle_irq, irq_flags,
+                    "pmu_sync1", NULL);
+    if (rc) 
+    {
+        free_irq(INT_CPU0, NULL);
+        return rc;
+    }
+    
+    rc = request_irq(INT_CPU2, sample_handle_irq, irq_flags,
+                    "pmu_sync2", NULL);
+    if (rc) 
+    {
+        free_irq(INT_CPU0, NULL);
+        free_irq(INT_CPU1, NULL);
+        return rc;
+    }
+    
+    rc = request_irq(INT_CPU3, sample_handle_irq, irq_flags,
+                    "pmu_sync3", NULL);
+    if (rc) 
+    {
+        free_irq(INT_CPU0, NULL);
+        free_irq(INT_CPU1, NULL);
+        free_irq(INT_CPU2, NULL);
         return rc;
     }
 
     return 0;
 }
+
+// CPU Online / Offline Handlers
+// These methods enabled /disable PMU sample gathering for a CPU
+// based on if the CPU is online or offline
+// Reference: https://www.kernel.org/doc/Documentation/cpu-hotplug.txt
+
+void registerCpuOnlineCallback(callback ptrCallback)
+{
+    cpuOnlineCallback = ptrCallback;
+}
+
+void onCpuOnline(void *info)
+{
+    printk(KERN_INFO "PMU Sampler: CPU online\n");  
+    startCtrsLocal();  
+    //if (cpuOnlineCallback != NULL)
+    //{
+    //    printk(KERN_INFO "Firing Callback!!!!"); 
+    //    (*cpuOnlineCallback)(NULL);
+    //}
+}
+
+void onCpuOffline(void *info)
+{
+    printk(KERN_INFO "PMU Sampler: CPU offline\n");  
+    stopCtrsLocal(NULL);
+}
+
+// Called when a CPU comes online / goes offline
+int cpu_callback(struct notifier_block *nfb,
+		 unsigned long action, void *hcpu)
+{
+    unsigned int cpu = (unsigned long)hcpu;
+    printk(KERN_INFO "CPU Change on CPU %u\n", cpu); 
+    // Wait until PMU values have been set.  Otherwise the module will crash.
+    if (shutdown == 0 && eventConfigs[0] > 0) 
+    {
+        switch (action) 
+        {
+            case CPU_ONLINE:
+            case CPU_ONLINE_FROZEN:
+                printk(KERN_INFO "CPU %u Online \n", cpu);
+                smp_call_function_single(cpu, onCpuOnline, NULL, 1);
+                break;
+            case CPU_DOWN_PREPARE:
+            case CPU_DOWN_PREPARE_FROZEN:
+                printk(KERN_INFO "CPU %u Going Down \n", cpu);
+                smp_call_function_single(cpu, onCpuOffline, NULL, 1);
+                break;
+        }     
+    }       
+    
+    return NOTIFY_OK;
+}
+
+static struct notifier_block cpu_notifier =
+{
+   .notifier_call = cpu_callback,
+};
 
 // No-ops
 void register_interrupt(void) { }
 void deregister_interrupt(void) { }
 
-void stopCtrsLocal(void* d) {
+void stopCtrsLocal(void* d) 
+{
     unsigned int i;
-
+    unsigned int proc = smp_processor_id();
+    
     disable_ccnt_irq();
     disable_ccnt();
-    for (i = 0; i < num_ctrs; i++) {
+    for (i = 0; i < num_ctrs; i++) 
+    {
         disable_pmn(i); 
     }
     disable_pmu();
+    
+    printk(KERN_INFO "Disabled PMU on core %u\n", proc);   
 }
 
-void startCtrsLocal(unsigned long* cfgs) {
+void startCtrsLocal(void)
+{   
     unsigned int i;
     unsigned int proc = smp_processor_id();
-    printk(KERN_INFO "Configuring PMU on core %u\n", proc);
+    printk(KERN_INFO "PMU Sampler: Configuring PMU on core %u\n", proc);       
 
+    if (init_pmu_single(proc))
+    {
+        printk(KERN_ERR "Unable to set IRQ affinity for PMU interrupt for CPU %u!\n", proc);
+    }
+    
     disable_pmu();
     disable_ccnt();
 
@@ -231,13 +265,14 @@ void startCtrsLocal(unsigned long* cfgs) {
     // Overflow once every 'period' cycles
     write_ccnt(0xFFFFFFFF - period);
     for (i=0; i<num_ctrs; i++) {
-        pmn_config(i, cfgs[i]); 
+        pmn_config(i, eventConfigs[i]); 
     }
 
     dump_regs();
 
     enable_ccnt_irq();
-    for (i = 0; i < num_ctrs; i++) {
+    for (i = 0; i < num_ctrs; i++) 
+    {
         enable_pmn(i);
     }
 
@@ -245,40 +280,41 @@ void startCtrsLocal(unsigned long* cfgs) {
     enable_pmu();
 }
 
-int initialize_arch(void) {
+int initialize_arch(void) 
+{
     int rc;
-    unsigned long val;
-
-    //Enabling PMU clock and power domains
-    __raw_writel(2, OMAP4430_CM_EMU_CLKSTCTRL);
-    __raw_writel(1, OMAP4430_CM_L3INSTR_L3_3_CLKCTRL);
-    __raw_writel(1, OMAP4430_CM_L3INSTR_L3_INSTR_CLKCTRL);
-    __raw_writel(1, OMAP4430_CM_PRM_PROFILING_CLKCTRL);
-    __raw_writel(3l << 24, OMAP4430_PM_EMU_PWRSTST);
-
-    do {
-        val = __raw_readl(OMAP4430_CM_EMU_DEBUGSS_CLKCTRL);
-    } while ((val & 0x30000) != 0);
-
-    __raw_writel(0x101, OMAP4430_RM_EMU_DEBUGSS_CONTEXT);
-
-
+    rc = 0;
+    
+    if (rc)
+    {
+        printk(KERN_ERR "Unable to set IRQ affinity for PMU interrupts!\n");
+        return -1;
+    }
+    
     num_ctrs = getPMN();
 
     printk(KERN_INFO "    Found %lu counters", num_ctrs);
     printk(KERN_INFO "    Configuring interrupt handler");
 
     rc = config_irq();
-    if (rc) {
+    if (rc) 
+    {
         printk(KERN_ERR "    -> Error configuring interrupts (%d)!!!", rc);
-    }
+        return -1;
+    }  
+    
+    printk(KERN_INFO "    Registering CPU notifier\n");
+    register_hotcpu_notifier(&cpu_notifier);
 
     return 0;
 }
 
-void cleanup_arch(void) {
-    pmu_cti_off();
-    free_irq(OMAP44XX_IRQ_CTI0, NULL);
-    free_irq(OMAP44XX_IRQ_CTI1, NULL);
+void cleanup_arch(void) 
+{
+    unregister_hotcpu_notifier(&cpu_notifier);
+    free_irq(INT_CPU0, NULL);
+    free_irq(INT_CPU1, NULL);
+    free_irq(INT_CPU2, NULL);
+    free_irq(INT_CPU3, NULL);
 }
 

@@ -1,0 +1,49 @@
+﻿<Window x:Class="SampleParserApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PMU Samples Parser and Aggregator" Height="350" Width="600" MinWidth="580" MinHeight="290"
+        Loaded="Window_Loaded">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition />
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        
+        <Label Margin="5" Grid.Row="0" Grid.Column="0" Content="Samples Directory:" />
+        <TextBox Grid.Row="0" Grid.Column="1" Margin="5" Text="{Binding SamplesDirectory}" />
+        <Button Grid.Row="0" Grid.Column="2" Margin="5" Width="40" Command="{Binding SelectSampleDirectoryCommand}" Content="..." HorizontalAlignment="Left" />
+        
+        <Label Margin="5" Grid.Row="1" Grid.Column="0" Content="Output Directory:" />
+        <TextBox Grid.Row="1" Grid.Column="1" Margin="5" Text="{Binding OutputDirectory}" />
+        <Button Grid.Row="1" Grid.Column="2" Margin="5" Width="40" Command="{Binding SelectOutputDirectoryCommand}" Content="..." HorizontalAlignment="Left" />
+
+        <Label Margin="5" Grid.Row="2" Grid.Column="0" Content="Samples Pattern:" />
+        <TextBox Grid.Row="2" Grid.Column="1" Margin="5" Text="{Binding SamplesPattern}" />
+
+        <Label Margin="5" Grid.Row="3" Grid.Column="0" Content="Experiment Number:" />
+        <TextBox Grid.Row="3" Grid.Column="1" Margin="5" Text="{Binding ExperimentNumber}" />
+        
+        <CheckBox Grid.Row="4" Grid.Column="0" Margin="5" Content="Create CSV Files?" IsChecked="{Binding CreateCsvFiles}" HorizontalContentAlignment="Left" VerticalContentAlignment="Center" VerticalAlignment="Center" />
+        <CheckBox Grid.Row="4" Grid.Column="1" Margin="5" HorizontalAlignment="Left" Content="Include Process Information" IsChecked="{Binding IncludeProcessInformation}"/>
+        
+        <Label Margin="5" Grid.Row="5" Grid.Column="0" Content="Dataset Aggregation Method:" />
+        <ComboBox Grid.Row="5" Grid.Column="1" Margin="5" ItemsSource="{Binding AggregationMethods}" SelectedItem="{Binding AggregationType}" />
+
+        <Button Grid.Row="6" Grid.Column="1" Margin="0,10,0,10" Width="150" Command="{Binding CreateDatasetCommand}" IsEnabled="{Binding CreateDatasetButtonEnabled}" Content="CreateDataset"/>
+
+        <Label Margin="5" Grid.Row="7" Grid.Column="0" Content="Output:" />
+        <Label Margin="5" Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" Content="{Binding OutputText}" />
+    </Grid>
+</Window>

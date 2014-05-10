@@ -4,12 +4,19 @@
 
 #include <linux/module.h>       /* Needed by all modules */
 #include <linux/kernel.h>       /* Needed for KERN_ERR */
+#include <linux/init.h>
+#include <linux/platform_device.h>
 #include <asm/io.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
+#include <linux/version.h>
+#include <linux/types.h>
+#include <linux/kdev_t.h>
+#include <linux/device.h>
+#include <linux/cdev.h>
 
 #include "sample_buffer.h"
 #include "pmu_api.h"
@@ -19,6 +26,11 @@
 uint64_t period = 100000;
 volatile unsigned char shutdown = 0;
 volatile uint64_t total_interrupts = 0;
+unsigned long eventConfigs[6];
+
+static dev_t first;         // Global variable for the first device number
+static struct cdev c_dev;     // Global variable for the character device structure
+static struct class *cl;     // Global variable for the device class
 
 struct blist {
     spinlock_t lock;
@@ -198,6 +210,18 @@ static struct int_attr ctr3_attr = {
     .value = 0,
 };
 
+static struct int_attr ctr4_attr = {
+    .attr.name="4",
+    .attr.mode = 0644,
+    .value = 0,
+};
+
+static struct int_attr ctr5_attr = {
+    .attr.name="5",
+    .attr.mode = 0644,
+    .value = 0,
+};
+
 
 static void initialize_buffer(struct buffer* b) {
     b->core = smp_processor_id();
@@ -228,6 +252,9 @@ void gatherSample(void) {
     for (i=0; i<num_ctrs; i++) {
         s->counters[i] = read_pmn(i);
     }    
+    
+    //printk( "Cycle Count is (%u).\tRead Ins: %u\tWrite Ins: %u\n", s->cycles, s->counters[0], s->counters[1] );
+    //printk( "Current PID is %d. \tCurrent Core is %d\n", s->pid, proc );
 
     if (b->num_samples >= BUFFER_ENTRIES) {
         append_blist(&full_buffers, b);
@@ -239,19 +266,14 @@ void gatherSample(void) {
 
 static void startCtrs(void* d) {
     unsigned int proc = smp_processor_id();
-    unsigned long cfgs[6] = {
-        ctr0_attr.value,  
-        ctr1_attr.value, 
-        ctr2_attr.value, 
-        ctr3_attr.value
-    };
-    printk(KERN_ERR "Configuring PMU on core %u\n", proc);
+
+    printk(KERN_ERR "Start Ctrs: Configuring PMU on core %u\n", proc);
 
     if (per_cpu(lbuffer, proc) != NULL)
         append_blist(&empty_buffers, per_cpu(lbuffer, proc));
     per_cpu(lbuffer, proc) = NULL;
 
-    startCtrsLocal(cfgs);
+    startCtrsLocal();
 }
 
 static void dumpCtrs(void* d) {
@@ -271,7 +293,7 @@ static void stopAll(void) {
     wake_up_all(&read_queue);
 }
 
-static void process_status_update(void) {
+static void process_status_update(void) {   
     switch (status_attr.value) {
         case 0:
             printk(KERN_ERR "Turning off Sync-PMU");
@@ -289,6 +311,14 @@ static void process_status_update(void) {
             // De-configure the counters
             shutdown = 0;
             register_interrupt();
+            
+            eventConfigs[0] = ctr0_attr.value;
+            eventConfigs[1] = ctr1_attr.value;
+            eventConfigs[2] = ctr2_attr.value;
+            eventConfigs[3] = ctr3_attr.value;
+            eventConfigs[4] = ctr4_attr.value;
+            eventConfigs[5] = ctr5_attr.value;                     
+            
             on_each_cpu(startCtrs, NULL, 1);
             break;
         case 2:
@@ -310,6 +340,8 @@ static struct attribute * myattr[] = {
     &ctr1_attr.attr,
     &ctr2_attr.attr,
     &ctr3_attr.attr,
+    &ctr4_attr.attr,
+    &ctr5_attr.attr,
     NULL
 };
 
@@ -369,10 +401,11 @@ static int init_sysfs_entries(void)
 
 int init_module(void)
 {
-    int i, rc;
+    int i, rc, init_result;
     printk(KERN_ERR "Initializing PMU Synchronous Sampler...");
-    printk(KERN_ERR "    Attempting to turn on EMU...");
 
+    registerCpuOnlineCallback(startCtrs);
+    
     if ((rc =initialize_arch()) != 0) {
         return rc;
     }
@@ -380,7 +413,7 @@ int init_module(void)
     init_blist(&empty_buffers);
     init_blist(&full_buffers);
 
-    printk(KERN_ERR "    Configuring interrupt handler");
+    //printk(KERN_ERR "    Configuring interrupt handler");
 
     init_sysfs_entries();
 
@@ -390,10 +423,54 @@ int init_module(void)
     }
 
     // Set up char device
-    if(register_chrdev(222,"pmu_samples", &my_fops)){
-        printk("<1>failed to register");
-    }  
+    /* Use this following method of creating a character device
+     * and device node, as there is no 'mkmod' command in Android 
+     * terminal.  The code above required a system call to 'mknod'
+     * to work correctly.
+     * 
+     * Reference: http://coherentmusings.wordpress.com/2012/12/22/device-node-creation-without-using-mknod/
+     */
+    init_result = alloc_chrdev_region( &first, 0, 1, "pmu_samples" );
+    
+    if( 0 > init_result )
+    {
+        printk( KERN_ALERT "Device Registration failed\n" );
+        return -1;
+    }
 
+    if ( (cl = class_create( THIS_MODULE, "chardev" ) ) == NULL )
+    {
+        printk( KERN_ALERT "Class creation failed\n" );
+        unregister_chrdev_region( first, 1 );
+        return -1;
+    }
+ 
+    if( device_create( cl, NULL, first, NULL, "pmu_samples" ) == NULL )
+    {
+        printk( KERN_ALERT "Device creation failed\n" );
+        class_destroy(cl);
+        unregister_chrdev_region( first, 1 );
+        return -1;
+    }
+
+    cdev_init( &c_dev, &my_fops );
+
+    if( cdev_add( &c_dev, first, 1 ) == -1)
+    {
+        printk( KERN_ALERT "Device addition failed\n" );
+        device_destroy( cl, first );
+        class_destroy( cl );
+        unregister_chrdev_region( first, 1 );
+        return -1;
+    }
+
+    eventConfigs[0] = 0;
+    eventConfigs[1] = 0;
+    eventConfigs[2] = 0;
+    eventConfigs[3] = 0;
+    eventConfigs[4] = 0;
+    eventConfigs[5] = 0;
+    
     printk(KERN_ERR "    Finished initializing.");
     return 0;
 }
@@ -412,12 +489,14 @@ void cleanup_module(void)
     if (mykobj) {
         kobject_put(mykobj);
         kfree(mykobj);
-    }
+    }     
 
-    unregister_chrdev(222, "pmu_samples");
+    cdev_del( &c_dev );
+    device_destroy( cl, first );
+    class_destroy( cl );
+    unregister_chrdev_region( first, 1 );
 
     printk(KERN_ERR "    Turning off interrupt handler");
-
     printk(KERN_ERR "    De-configuring counters");
 
     stopAll();

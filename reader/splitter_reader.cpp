@@ -6,10 +6,11 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <cassert>
 #include <errno.h>
-#include <boost/foreach.hpp>
+//#include <boost/foreach.hpp>
 #include <limits.h>
 
 using namespace std;
@@ -78,10 +79,20 @@ public:
         }
     }
 
-	static void closeAll() {
-		BOOST_FOREACH(auto p, pid_files) {
+	static void closeAll() {	
+		//vector<FileInfo> files = pid_files.enum_values();
+		//for (int i = 0; i < pid_files.size(); i++)
+		//{
+			
+		//}
+		for(auto p : pid_files) 
+		{
 			p.second.close(indexfd);
-		}
+		} 
+	
+		//BOOST_FOREACH(auto p, pid_files) {
+		//	p.second.close(indexfd);
+		//}
 		pid_files.clear();
 
         fclose(indexfd);
@@ -199,6 +210,26 @@ void process_packet(struct packet_header head,
 		fprintf(stderr, "Possible data corruption: head.core (%d) more than 16. Skipping packet", head.core);
 		return;
 	}
+	
+	// Do not process samples from kernel space
+	if (head.kernel == 1)
+	{
+		return;
+	}
+	
+	// Do not process 'ifstream::fail'.  These samples were logged
+	// by a kernel space worker that died before a call to /proc/[PID]/cmdline
+	string commandLine(cmdline);
+	if (commandLine.compare("ifstream::fail") >= 0)
+	{
+		return;
+	}
+	
+	if (commandLine.compare("<pre-initialized>") == 0)
+	{
+		return;
+	}
+	
 	assert(head.core < 16);
 	cores[head.core].process_packet(head, cmdline, exe, samples);
 

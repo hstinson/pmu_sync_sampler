@@ -1,7 +1,7 @@
 CFLAGS=-O2 -g -Wall -I../module/
-CXXFLAGS=$(CFLAGS) -std=c++0x
+CXXFLAGS=$(CFLAGS) -std=gnu++0x #-std=c++0x 
 
-TARGETS = reader splitter
+TARGETS = reader splitter server
 
 all: $(TARGETS)
 
@@ -10,6 +10,9 @@ reader: reader.o packet.o text_reader.o
 
 splitter: reader.o packet.o splitter_reader.o
 	$(CXX) $(LDFLAGS) -o $@ $^
+
+server: tcpServer.o
+	$(CXX) $(LDFLAGS) -o $@ $^ -pthread
 
 packet.o: ../sender/packet.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $^

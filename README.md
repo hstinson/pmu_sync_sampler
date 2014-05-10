@@ -1,13 +1,13 @@
-pmu_sync_sampler
+pmu_sync_sampler for Nexus 7 (2012 Model)
 ================
 
-A Linux module for PMU sampling that synchronously samples all counters.
+A fork of https://github.com/castl/pmu_sync_sampler that adds support for collecting and experimenting on PMU samples from a Nexus 7.
 
-Supports Intel and ARM. Tested chips: Intel Xeon 5550 and TI OMAP4460.
-- Intel: mv Makefile.intel Makefile
-- Arm:   mv Makefile.arm   Makefile
-
-
-Bugs: 
-- Has a crashing bug related to opening the virtual device at the wrong time.
-- For Intel, works on 2.6.32 kernel. 3.2 kernels seem to have some interference with perf_event
+##Folder Information
+- *AndroidPmuReaderApp*: Contains Android-related services to read the PMU samples and send them via WiFi.
+- *KernelMods*: Modifications made to the Linux Kernel that enable PMUs to be correctly read on the Nexus 7.  See _changes.txt_ in the _KernelMods_ folder for more information.
+- *module*:  Kernel module that reads PMU events and puts them into a buffer.
+- *reader*:  TCP server to read PMU samples and save to a file.  Contains code to parse through the raw PMU data.
+- *SampleParser*:  C# applications that further perform parsing and filtering of the PMU data.  Contains code to perform aggregation of the raw data.
+- *Scripts*:  Shell scripts used when collecting raw PMU samples from the Nexus 7. Other scripts used for filtering, aggregating, and classifying PMU events.
+- *sender*: Unmodififed from original source.  See _AndroidPmuReaderApp\jni\PacketSender_ for files related to reading raw PMU data from a buffer.
